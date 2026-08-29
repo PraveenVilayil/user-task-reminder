@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 public interface UserService {
+
     UserDto create(UserDto user);
 
     UserDto get(UUID id);
