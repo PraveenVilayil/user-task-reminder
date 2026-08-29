@@ -2,13 +2,21 @@ package com.neko.constants;
 
 public interface ApiConstants {
 
-    public static final String V1 = "/v1";
-    public static final String TASK_MANAGEMENT = "/taskManagement";
-    public static final String API = "/api";
-    public static final String TASK = "/task";
-    public static final String USER = "/user";
-    public static final String SLASH = "/";
-    public static final String ID_VAR = "{id}";
-    public static final String ID = "id";
-    public static final String NOTIFICATION = "/notification" ;
+    String V1 = "/v1";
+    String TASK_MANAGEMENT = "/taskManagement";
+    String API = "/api";
+    String TASK = "/task";
+    String USER = "/user";
+    String SLASH = "/";
+    String ID_VAR = "{id}";
+    String ID = "id";
+    String NOTIFICATION = "/notification";
+    String REMINDER = "/reminder";
+    String AUDIT = "/audit";
+    String SEARCH = "/search";
+    String CANCEL = "/cancel";
+    String USER_ID_VAR = "{userId}";
+    String USER_ID = "userId";
+    String TASK_ID_VAR = "{taskId}";
+    String TASK_ID = "taskId";
 }
