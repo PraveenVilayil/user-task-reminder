@@ -1,0 +1,22 @@
+# Repository tests run against in-memory H2 with the real Flyway migrations,
+# so the baseline schema is verified against the entity mappings on every build.
+spring:
+  datasource:
+    url: jdbc:h2:mem:utr-db-test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    clean-disabled: false
+
+logging:
+  level:
+    root: WARN
+    org.flywaydb: INFO

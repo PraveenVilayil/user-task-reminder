@@ -7,71 +7,115 @@ import com.neko.exceptions.UserTaskReminderException;
 import com.neko.repositories.UserRepository;
 import com.neko.service.UserService;
 import org.modelmapper.ModelMapper;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.lang.reflect.Field;
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Service
 public class UserServiceImpl implements UserService {
 
-    @Autowired
-    UserRepository userRepository;
+    private static final Logger log = LoggerFactory.getLogger(UserServiceImpl.class);
 
-    @Autowired
-    ModelMapper mapper;
+    private final UserRepository userRepository;
+    private final ModelMapper mapper;
+    private final Clock clock;
+
+    public UserServiceImpl(UserRepository userRepository, ModelMapper mapper, Clock clock) {
+        this.userRepository = userRepository;
+        this.mapper = mapper;
+        this.clock = clock;
+    }
 
     @Override
+    @Transactional
     public UserDto create(UserDto user) {
-        user.setId(UUID.randomUUID());
-        user.setCreatedDate(LocalDateTime.now());
-        User savedUser = userRepository.save(mapper.map(user,User.class));
-        return mapper.map(savedUser, UserDto.class);
+        if (userRepository.existsByUserName(user.getUserName())) {
+            throw new UserTaskReminderException(ErrorCode.DUPLICATE_USER_NAME, user.getUserName());
+        }
+        if (userRepository.existsByEmail(user.getEmail())) {
+            throw new UserTaskReminderException(ErrorCode.DUPLICATE_EMAIL, user.getEmail());
+        }
+
+        User entity = new User();
+        entity.setId(UUID.randomUUID());
+        entity.setUserName(user.getUserName());
+        entity.setEmail(user.getEmail());
+        entity.setFirstName(user.getFirstName());
+        entity.setLastName(user.getLastName());
+        entity.setRoles(user.getRoles() == null ? new ArrayList<>() : new ArrayList<>(user.getRoles()));
+        entity.setCreatedDate(LocalDateTime.now(clock));
+        entity.setUpdatedDate(entity.getCreatedDate());
+
+        User saved = userRepository.save(entity);
+        log.info("Created user {} ({})", saved.getUserName(), saved.getId());
+        return mapper.map(saved, UserDto.class);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public UserDto get(UUID id) {
-        return mapper.map(userRepository.findById(id)
-                .orElseThrow(() -> new UserTaskReminderException(ErrorCode.USER_NOT_FOUND, id)), UserDto.class);
+        return mapper.map(findOrThrow(id), UserDto.class);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<UserDto> list() {
         return userRepository.findAll().stream()
                 .map(user -> mapper.map(user, UserDto.class))
-                .collect(Collectors.toList());
+                .toList();
     }
 
+    /**
+     * Partial update: only non-null fields on the incoming DTO are applied.
+     * Server-owned fields (id, createdDate) are never taken from the request.
+     */
     @Override
+    @Transactional
     public UserDto update(UUID id, UserDto user) {
-        User existingUser = userRepository.findById(id)
-                .orElseThrow(() -> new UserTaskReminderException(ErrorCode.USER_NOT_FOUND, id));
+        User existing = findOrThrow(id);
 
-        for(Field field: user.getClass().getDeclaredFields()) {
-            field.setAccessible(true);
-            try {
-                Object value = field.get(user);
-                if(Objects.nonNull(value)) {
-                    Field entityField = existingUser.getClass().getDeclaredField(field.getName());
-                    entityField.setAccessible(true);
-                    entityField.set(existingUser, value);
-                }
-            } catch (IllegalAccessException | NoSuchFieldException e) {
-                throw new RuntimeException(e);
+        if (user.getUserName() != null && !user.getUserName().equals(existing.getUserName())) {
+            if (userRepository.existsByUserName(user.getUserName())) {
+                throw new UserTaskReminderException(ErrorCode.DUPLICATE_USER_NAME, user.getUserName());
             }
+            existing.setUserName(user.getUserName());
         }
-        return mapper.map(userRepository.save(existingUser), UserDto.class);
+        if (user.getEmail() != null && !user.getEmail().equals(existing.getEmail())) {
+            if (userRepository.existsByEmail(user.getEmail())) {
+                throw new UserTaskReminderException(ErrorCode.DUPLICATE_EMAIL, user.getEmail());
+            }
+            existing.setEmail(user.getEmail());
+        }
+        if (user.getFirstName() != null) {
+            existing.setFirstName(user.getFirstName());
+        }
+        if (user.getLastName() != null) {
+            existing.setLastName(user.getLastName());
+        }
+        if (user.getRoles() != null) {
+            existing.setRoles(new ArrayList<>(user.getRoles()));
+        }
+        existing.setUpdatedDate(LocalDateTime.now(clock));
+
+        return mapper.map(userRepository.save(existing), UserDto.class);
     }
 
     @Override
+    @Transactional
     public void delete(UUID id) {
-        User user = userRepository.findById(id)
+        userRepository.delete(findOrThrow(id));
+        log.info("Deleted user {}", id);
+    }
+
+    private User findOrThrow(UUID id) {
+        return userRepository.findById(id)
                 .orElseThrow(() -> new UserTaskReminderException(ErrorCode.USER_NOT_FOUND, id));
-        userRepository.delete(user);
     }
 }

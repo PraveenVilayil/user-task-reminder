@@ -1,0 +1,81 @@
+# Local stack: the API, PostgreSQL, and MailHog for the email channel.
+#
+#   docker compose up --build
+#
+# API          http://localhost:8080
+# Swagger UI   http://localhost:8080/swagger-ui.html
+# MailHog UI   http://localhost:8025
+#
+# Copy .env.example to .env first; compose reads it automatically.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: utr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-user_task_reminder}
+      POSTGRES_USER: ${POSTGRES_USER:-utr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set, see .env.example}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # The app waits on this, so the schema migration never races the database.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-utr} -d ${POSTGRES_DB:-user_task_reminder}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  mailhog:
+    # Catches every outbound message so the email channel can be exercised
+    # locally without sending real mail.
+    image: mailhog/mailhog:v1.0.1
+    container_name: utr-mailhog
+    restart: unless-stopped
+    ports:
+      - "${MAILHOG_SMTP_PORT:-1025}:1025"
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "1025"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: utr-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-user_task_reminder}
+      DB_USERNAME: ${POSTGRES_USER:-utr}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set, see .env.example}
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
+      NOTIFICATIONS_EMAIL_ENABLED: ${NOTIFICATIONS_EMAIL_ENABLED:-true}
+      NOTIFICATIONS_EMAIL_FROM: ${NOTIFICATIONS_EMAIL_FROM:-no-reply@user-task-reminder.local}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      LOG_LEVEL_APP: ${LOG_LEVEL_APP:-INFO}
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres-data:
+    name: utr-postgres-data

@@ -2,79 +2,189 @@ package com.neko.serviceImpl;
 
 import com.neko.dto.NotificationDto;
 import com.neko.entity.Notification;
+import com.neko.entity.Task;
+import com.neko.entity.User;
+import com.neko.enums.Channel;
+import com.neko.enums.DeliveryStatus;
 import com.neko.exceptions.ErrorCode.ErrorCode;
 import com.neko.exceptions.UserTaskReminderException;
+import com.neko.notification.NotificationDispatcher;
+import com.neko.notification.NotificationProperties;
 import com.neko.repositories.NotificationRepository;
+import com.neko.repositories.TaskRepository;
+import com.neko.repositories.UserRepository;
 import com.neko.service.NotificationService;
 import org.modelmapper.ModelMapper;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.lang.reflect.Field;
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Service
 public class NotificationServiceImpl implements NotificationService {
 
-    @Autowired
-    private NotificationRepository notificationRepository;
+    private static final Logger log = LoggerFactory.getLogger(NotificationServiceImpl.class);
 
-    @Autowired
-    private ModelMapper mapper;
+    private final NotificationRepository notificationRepository;
+    private final UserRepository userRepository;
+    private final TaskRepository taskRepository;
+    private final NotificationDispatcher dispatcher;
+    private final NotificationProperties properties;
+    private final ModelMapper mapper;
+    private final Clock clock;
+
+    public NotificationServiceImpl(NotificationRepository notificationRepository,
+                                   UserRepository userRepository,
+                                   TaskRepository taskRepository,
+                                   NotificationDispatcher dispatcher,
+                                   NotificationProperties properties,
+                                   ModelMapper mapper,
+                                   Clock clock) {
+        this.notificationRepository = notificationRepository;
+        this.userRepository = userRepository;
+        this.taskRepository = taskRepository;
+        this.dispatcher = dispatcher;
+        this.properties = properties;
+        this.mapper = mapper;
+        this.clock = clock;
+    }
 
     @Override
+    @Transactional
     public NotificationDto create(NotificationDto notification) {
-        notification.setId(UUID.randomUUID());
-        notification.setCreatedDate(LocalDateTime.now());
-        Notification saved = notificationRepository.save(mapper.map(notification, Notification.class));
+        Notification entity = new Notification();
+        entity.setId(UUID.randomUUID());
+        entity.setCreatedDate(LocalDateTime.now(clock));
+        entity.setMessage(notification.getMessage());
+        entity.setSeen(notification.getSeen() != null && notification.getSeen());
+        entity.setChannel(notification.getChannel() == null
+                ? properties.getDefaultChannel()
+                : notification.getChannel());
+        entity.setUser(resolveUser(notification.getUserId()));
+        entity.setTask(resolveTask(notification.getTaskId()));
+        entity.setDeliveryStatus(DeliveryStatus.PENDING);
+
+        dispatcher.dispatch(entity);
+        Notification saved = notificationRepository.save(entity);
         return mapper.map(saved, NotificationDto.class);
     }
 
     @Override
-    public NotificationDto getById(UUID id) {
-        Notification notification = notificationRepository.findById(id)
-                .orElseThrow(() -> new UserTaskReminderException(ErrorCode.NOTIFICATION_NOT_FOUND, id));
-        return mapper.map(notification, NotificationDto.class);
+    @Transactional
+    public NotificationDto raise(UUID taskId, UUID userId, String message, Channel channel) {
+        NotificationDto request = new NotificationDto();
+        request.setTaskId(taskId);
+        request.setUserId(userId);
+        request.setMessage(message);
+        request.setChannel(channel);
+        return create(request);
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public NotificationDto getById(UUID id) {
+        return mapper.map(findOrThrow(id), NotificationDto.class);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<NotificationDto> get() {
         return notificationRepository.findAll().stream()
                 .map(notification -> mapper.map(notification, NotificationDto.class))
-                .collect(Collectors.toList());
+                .toList();
     }
 
     @Override
-    public NotificationDto update(UUID id, NotificationDto notification) {
-        Notification existingNotification = notificationRepository.findById(id)
-                .orElseThrow(() -> new UserTaskReminderException(ErrorCode.NOTIFICATION_NOT_FOUND, id));
+    @Transactional(readOnly = true)
+    public List<NotificationDto> getByUser(UUID userId) {
+        if (!userRepository.existsById(userId)) {
+            throw new UserTaskReminderException(ErrorCode.USER_NOT_FOUND, userId);
+        }
+        return notificationRepository.findByUserIdOrderByCreatedDateDesc(userId).stream()
+                .map(notification -> mapper.map(notification, NotificationDto.class))
+                .toList();
+    }
 
-        for (Field field : notification.getClass().getDeclaredFields()) {
-            field.setAccessible(true);
-            try {
-                Object value = field.get(notification);
-                if (Objects.nonNull(value)) {
-                    Field entityField = existingNotification.getClass().getDeclaredField(field.getName());
-                    entityField.setAccessible(true);
-                    entityField.set(existingNotification, value);
-                }
-            } catch (IllegalAccessException | NoSuchFieldException e) {
-                throw new RuntimeException(e);
-            }
+    /**
+     * Partial update. Only the client-owned fields are writable; delivery
+     * bookkeeping (status, attempts, timestamps) belongs to the dispatcher.
+     */
+    @Override
+    @Transactional
+    public NotificationDto update(UUID id, NotificationDto notification) {
+        Notification existing = findOrThrow(id);
+
+        if (notification.getMessage() != null) {
+            existing.setMessage(notification.getMessage());
+        }
+        if (notification.getSeen() != null) {
+            existing.setSeen(notification.getSeen());
+        }
+        if (notification.getChannel() != null) {
+            existing.setChannel(notification.getChannel());
+        }
+        if (notification.getUserId() != null) {
+            existing.setUser(resolveUser(notification.getUserId()));
+        }
+        if (notification.getTaskId() != null) {
+            existing.setTask(resolveTask(notification.getTaskId()));
         }
 
-        Notification saved = notificationRepository.save(existingNotification);
-        return mapper.map(saved, NotificationDto.class);
+        return mapper.map(notificationRepository.save(existing), NotificationDto.class);
     }
 
     @Override
+    @Transactional
     public void delete(UUID id) {
-        Notification notification = notificationRepository.findById(id)
+        notificationRepository.delete(findOrThrow(id));
+        log.info("Deleted notification {}", id);
+    }
+
+    @Override
+    @Transactional
+    public int retryFailedDeliveries() {
+        List<Notification> backlog = notificationRepository
+                .findByDeliveryStatusInAndDeliveryAttemptsLessThan(
+                        List.of(DeliveryStatus.PENDING, DeliveryStatus.FAILED),
+                        properties.getMaxDeliveryAttempts());
+        if (backlog.isEmpty()) {
+            return 0;
+        }
+
+        int delivered = 0;
+        for (Notification notification : backlog) {
+            if (dispatcher.dispatch(notification)) {
+                delivered++;
+            }
+        }
+        notificationRepository.saveAll(backlog);
+        log.info("Retried {} notification deliveries, {} succeeded", backlog.size(), delivered);
+        return backlog.size();
+    }
+
+    private Notification findOrThrow(UUID id) {
+        return notificationRepository.findById(id)
                 .orElseThrow(() -> new UserTaskReminderException(ErrorCode.NOTIFICATION_NOT_FOUND, id));
-        notificationRepository.delete(notification);
+    }
+
+    private User resolveUser(UUID userId) {
+        if (userId == null) {
+            return null;
+        }
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new UserTaskReminderException(ErrorCode.USER_NOT_FOUND, userId));
+    }
+
+    private Task resolveTask(UUID taskId) {
+        if (taskId == null) {
+            return null;
+        }
+        return taskRepository.findById(taskId)
+                .orElseThrow(() -> new UserTaskReminderException(ErrorCode.TASK_NOT_FOUND, taskId));
     }
 }
