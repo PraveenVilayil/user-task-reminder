@@ -55,6 +55,12 @@ management:
       show-details: when-authorized
       probes:
         enabled: true
+  health:
+    mail:
+      # Only probe SMTP when the email channel is actually switched on;
+      # otherwise an unreachable mail server drags the whole app to DOWN
+      # over a feature nobody is using.
+      enabled: ${NOTIFICATIONS_EMAIL_ENABLED:false}
 
 app:
   scheduler:
