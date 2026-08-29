@@ -1,0 +1,12 @@
+# Keep the build context small and free of local state.
+.git
+.github
+**/target
+.idea
+*.iml
+.vscode
+.env
+docs
+README.md
+CONTRIBUTING.md
+LICENSE
